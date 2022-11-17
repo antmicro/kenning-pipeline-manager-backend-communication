@@ -4,7 +4,7 @@ with open('README.md', 'r') as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name='pipeline_manager_communication_backend',
+    name='kenning_pipeline_manager_backend_communication',
     version='0.1',
     packages=setuptools.find_packages(),
     long_description=long_description,
