@@ -2,7 +2,7 @@ import socket
 import select
 import logging
 from typing import Optional
-from kenning_pipeline_manager_backend_communication.misc_structures import MessageType, Status, OutputTuple  # noqa: E501
+from pipeline_manager_backend_communication.misc_structures import MessageType, Status, OutputTuple  # noqa: E501
 
 
 class CommunicationBackend(object):
