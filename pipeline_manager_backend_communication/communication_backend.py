@@ -131,6 +131,31 @@ class CommunicationBackend(object):
             self.client_socket.setblocking(False)
         return OutputTuple(Status.CLIENT_CONNECTED, None)
 
+    @property
+    def connected(self):
+        """
+        Function checks whether the connection is alive.
+        It does that by reading from the socket. There are three possible
+        cases:
+        * The socket is readable and the message is not empty. That means
+        that the client is still connected. Read bytes that will be later used
+        to gather a complete message are added to the internal
+        `collected_data` buffer.
+        * The socket is readable and the message is empty. That means that the
+        client closed the connection. The socket is closed.
+        * The socket is not readable. That means that there the client is
+        still connected and there is no message to receive.
+
+        Returns
+        -------
+        bool :
+            True if the client socket is connected. False otherwise
+        """
+        out = self._receive_message(0)
+        if out.status in Status.CONNECTION_CLOSED:
+            return False
+        return True
+
     def wait_for_message(self) -> OutputTuple:
         """
         This function checks whether a complete message has been received.
