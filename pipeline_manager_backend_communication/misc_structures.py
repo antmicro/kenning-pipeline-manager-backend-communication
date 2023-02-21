@@ -70,27 +70,24 @@ class Status(Enum):
     NOTHING - general use type used when there is no particular server status.
     SERVER_INITIALIZED - type indicating that the server was initialized
         successfully.
-    CLIENT_CONNECTED - type indicating that a client was connected
+    CLIENT_CONNECTED - type indicating that client was connected
         successfully.
-    CLIENT_DISCONNECTED - type indicating that a client disconnected.
+    CONNECTION_CLOSED - type indicating that connection is disconnected.
     CLIENT_IGNORE - type indicating that there was a new connection request
         which was ignored, because there is already a client connected.
     DATA_READY - type indicating that a message was fully received and can
         be read.
     DATA_SENT - type indicating that a message was successfully sent.
     ERROR - type indicating that function that was called raised an error.
-    SERVER_DISCONNECTED - type indicating that the server was disconnected,
-        along with a client if there was one.
     """
     NOTHING = 0
     SERVER_INITIALIZED = 1
     CLIENT_CONNECTED = 2
-    CLIENT_DISCONNECTED = 3
+    CONNECTION_CLOSED = 3
     CLIENT_IGNORED = 4
     DATA_READY = 5
     DATA_SENT = 6
     ERROR = 7
-    SERVER_DISCONNECTED = 8
 
 
 class OutputTuple(NamedTuple):

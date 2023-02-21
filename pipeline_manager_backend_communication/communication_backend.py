@@ -131,18 +131,49 @@ class CommunicationBackend(object):
             self.client_socket.setblocking(False)
         return OutputTuple(Status.CLIENT_CONNECTED, None)
 
-    def wait_for_message(
+    def wait_for_message(self) -> OutputTuple:
+        """
+        This function checks whether a complete message has been received.
+        If not it waits until the message is received.
+
+        Returns
+        -------
+        OutputTuple :
+            Where Status states whether there is data to be read and the
+            data argument is either a None or a message received from the
+            client.
+        """
+        while True:
+            # If the message has already been received and stored in the buffer
+            # but has not been parsed
+            out = self.parse_collected_data()
+            if out.status == Status.DATA_READY:
+                return out
+
+            # If the message has not been received yet
+            out = self._receive_message()
+            if out.status == Status.CONNECTION_CLOSED:
+                return out
+
+    def _receive_message(
             self,
             timeout: Optional[float] = None
             ) -> OutputTuple:
         """
-        Waits for a message from the client socket.
+        Waits for a message from the socket for time specificed
+        in `timeout`.
+
+        Reads data from the socket and adds it to the buffer of all received
+        data  that is later used by `parse_collected_data` function to gather
+        complete messages.
+
+        This function should only be used internally.
 
         Parameters
         ----------
-        timeout : float
-            Time that the server is going to wait for a client's message.
-            If it is none then the server socket blocks indefinitely.
+        timeout : Optional[float]
+            Time to wait for a message. If it is none then the socket
+            blocks indefinitely.
 
         Returns
         -------
@@ -151,50 +182,37 @@ class CommunicationBackend(object):
             data argument is either a None or a message received from the
             client.
         """
-        ready, _, _ = select.select([self.client_socket], [], [], timeout)
+        if self.client_socket is None:
+            self.log.info('Cannot reacive any messages. Connection is closed.')
+            return OutputTuple(Status.CONNECTION_CLOSED, None)
+
+        try:
+            ready, _, _ = select.select([self.client_socket], [], [], timeout)
+        except OSError as ex:
+            self.log.info('Error while waiting for the client socket. Aborting.')  # noqa: E501
+            self.disconnect()
+            return OutputTuple(Status.CONNECTION_CLOSED, ex)
+
         if ready:
-            return self.receive_data()
+            data = self.client_socket.recv(self.packet_size)
+            self.collected_data += data
+
+            if data == b'':
+                self.log.info('Other side closed the connection. Closing the socket')  # noqa: E501
+                self.client_socket.close()
+                self.client_socket = None
+                return OutputTuple(Status.CONNECTION_CLOSED, None)
 
         return OutputTuple(Status.NOTHING, None)
 
-    def receive_data(
-            self
-            ) -> OutputTuple:
+    def parse_collected_data(self) -> OutputTuple:
         """
-        Tries to read data from the client.
-
-        Returns
-        -------
-        OutputTuple :
-            Where Status states whether there is data to be read and the
-            data argument is either a None or a message received from the
-            client.
-        """
-        data = self.client_socket.recv(self.packet_size)
-        if not data:
-            self.log.info('Client disconnected from the server')
-            self.client_socket.close()
-            self.client_socket = None
-            return OutputTuple(Status.CLIENT_DISCONNECTED, None)
-        return self.parse_received(data)
-
-    def parse_received(
-            self,
-            data: bytes
-            ) -> OutputTuple:
-        """
-        Collects received bytes and checks whether collected a full message.
-        All bytes that are received from the client socket using `recv` should
-        be passed to this function.
+        Collects all received bytes and checks whether collected a full
+        message. If a complete message is collected then it is removed
+        from the `collected_message` buffer and returned.
 
         Messages are of format:
-
         SIZE : 4 bytes | TYPE : 2 bytes | CONTENT : SIZE bytes
-
-        Parameters
-        ----------
-        data : bytes
-            Bytes that are received from the client socket sequentially.
 
         Returns
         -------
@@ -203,8 +221,6 @@ class CommunicationBackend(object):
             data argument is either a None or a message received from the
             client.
         """
-        self.collected_data += data
-
         # Checking whether a header of the message was received
         if len(self.collected_data) < 6:
             return OutputTuple(Status.NOTHING, None)
@@ -290,13 +306,12 @@ class CommunicationBackend(object):
         OutputTuple :
             Where Status states whether disconnecting was successful.
         """
-        if self.server_socket:
-            self.server_socket.close()
-            self.server_socket = None
-            self.log.info('Server socket was disconnected')
         if self.client_socket:
             self.client_socket.close()
             self.client_socket = None
             self.log.info('Client socket was disconnected')
-
-        return OutputTuple(Status.SERVER_DISCONNECTED, None)
+        if self.server_socket:
+            self.server_socket.close()
+            self.server_socket = None
+            self.log.info('Server socket was disconnected')
+        return OutputTuple(Status.CONNECTION_CLOSED, None)
