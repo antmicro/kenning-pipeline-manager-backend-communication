@@ -14,7 +14,7 @@ from pipeline_manager_backend_communication. \
 from pipeline_manager_backend_communication \
     .misc_structures import MessageType, Status
 
-host = 127.0.0.1
+host = '127.0.0.1'
 port = 5000
 
 # Creating a client instance with host and port specified
