@@ -222,7 +222,7 @@ class CommunicationBackend(object):
             data = self.client_socket.recv(self.packet_size)
             self.collected_data += data
 
-            if data == b'':
+            if len(data) == 0:
                 self.log.info('Other side closed the connection. Closing the socket')  # noqa: E501
                 self.client_socket.close()
                 self.client_socket = None
