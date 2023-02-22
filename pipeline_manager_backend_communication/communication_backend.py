@@ -208,7 +208,7 @@ class CommunicationBackend(object):
             client.
         """
         if self.client_socket is None:
-            self.log.info('Cannot reacive any messages. Connection is closed.')
+            self.log.info('Cannot receive any messages. Connection is closed.')
             return OutputTuple(Status.CONNECTION_CLOSED, None)
 
         try:
