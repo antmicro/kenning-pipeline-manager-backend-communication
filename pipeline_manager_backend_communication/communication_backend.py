@@ -152,7 +152,7 @@ class CommunicationBackend(object):
             True if the client socket is connected. False otherwise
         """
         out = self._receive_message(0)
-        if out.status in Status.CONNECTION_CLOSED:
+        if out.status == Status.CONNECTION_CLOSED:
             return False
         return True
 
