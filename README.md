@@ -5,6 +5,15 @@ Copyright (c) 2022-2023 [Antmicro](https://www.antmicro.com)
 Pipeline Manager Backend Communication is an implementation of a protocol used to communicate with [Pipeline Manager](https://github.com/antmicro/kenning-pipeline-manager).
 It can be used to implement a client that can send and receive messages from Pipeline Manager.
 
+## Installation
+
+To install the module, `pip` and `Python3` are required.
+After installing them, install the module with:
+
+```bash
+pip install git+https://github.com/antmicro/kenning-pipeline-manager-backend-communication.git
+```
+
 ## Example client implementation
 
 ```python
