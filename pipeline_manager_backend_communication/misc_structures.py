@@ -32,6 +32,7 @@ class MessageType(Enum):
     RUN = 4
     IMPORT = 5
     EXPORT = 6
+    PROGRESS = 7
 
     def to_bytes(self) -> bytes():
         """
