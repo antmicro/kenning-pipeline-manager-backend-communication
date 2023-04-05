@@ -2,11 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import socket
-import select
+from collections import defaultdict
 import logging
-from typing import Optional
-from pipeline_manager_backend_communication.misc_structures import MessageType, Status, OutputTuple  # noqa: E501
+import select
+import socket
+from typing import Optional, Callable
+
+from pipeline_manager_backend_communication.misc_structures import MessageType, OutputTuple, Status  # noqa: E501
 
 
 class CommunicationBackend(object):
@@ -48,7 +50,25 @@ class CommunicationBackend(object):
         self.client_socket = None
         self.packet_size = 4096
         self.collected_data = bytes()
+
+        self.callbacks = defaultdict(list)
         self.log = logging.getLogger()
+
+    def register_callback(
+            self,
+            message_type: MessageType,
+            callback: Callable[..., None],
+            *args) -> None:
+        self.callbacks[message_type].append((callback, args))
+
+    def unregister_callback(
+            self,
+            message_type: MessageType,
+            callback: Callable[..., None]) -> None:
+        self.callbacks[message_type] = [
+            c for c in self.callbacks[message_type][0]
+            if callback != c
+        ]
 
     def initialize_server(self) -> OutputTuple:
         """
@@ -266,6 +286,12 @@ class CommunicationBackend(object):
 
         message_type = MessageType.from_bytes(message[:2])
         message_content = message[2:]
+
+        # Invoke callbacks registered for this message type
+        for callback in self.callbacks[message_type]:
+            fun, args = callback
+            self.log.info(f'Invoking callback for {message_type} message')
+            fun(message_type, message_content, self, *args)
 
         return OutputTuple(Status.DATA_READY, (message_type, message_content))
 
