@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import Enum
-from typing import NamedTuple, Union
+from typing import NamedTuple, Tuple, Union
 
 
 class MessageType(Enum):
@@ -105,4 +105,4 @@ class OutputTuple(NamedTuple):
         along with the status.
     """
     status: Status
-    data: Union[tuple[MessageType, bytes], Exception, None]
+    data: Union[Tuple[MessageType, bytes], Exception, None]
