@@ -13,6 +13,7 @@ class MessageType(Enum):
     Those messages should only be used by the external application:
     * OK - type indicating success. Should only be used by the client.
     * ERROR - type indicating error. Should only be used by the client.
+    * WARNING - type indicating warning. Should only be used by the client.
 
     Those messages should only be used by Pipeline Manager:
     * VALIDATE - type indicating that the message is a validation request.
@@ -33,6 +34,7 @@ class MessageType(Enum):
     IMPORT = 5
     EXPORT = 6
     PROGRESS = 7
+    WARNING = 8
 
     def to_bytes(self) -> bytes():
         """
