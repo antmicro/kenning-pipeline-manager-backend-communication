@@ -16,6 +16,10 @@ setuptools.setup(
     description='General purpose TCP communication backend',
     author='Antmicro Ltd.',
     author_email='contact@antmicro.com',
+    install_requires=[
+        "json-rcp",
+        "pipeline_manager @ file://localhost/home/ant/PIPELINE_MANAGER/kenning-pipeline-manager-clean",  # noqa; E501
+    ],
     classifiers=[
         'Programming Language :: Python :: 3',
         'License :: OSI Approved :: Apache Software License',
