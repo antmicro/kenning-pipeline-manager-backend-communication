@@ -6,33 +6,34 @@ from collections import defaultdict
 import logging
 import select
 import socket
-from typing import Optional, Callable
+import json
+from typing import Optional, Callable, Dict
 
-from pipeline_manager_backend_communication.misc_structures import MessageType, OutputTuple, Status  # noqa: E501
+from pipeline_manager_backend_communication.misc_structures import OutputTuple, Status  # noqa: E501
+from pipeline_manager_backend_communication.json_rpc_base import JSONRPCBase
 
 
-class CommunicationBackend(object):
+class CommunicationBackend(JSONRPCBase):
     """
     TCP-based communication tool with a single client.
     It can be used both to create a TCP client and a TCP server part.
 
     Every message is of a format:
 
-    SIZE : 4 bytes | TYPE : 2 bytes | CONTENT : SIZE bytes
+    SIZE : 4 bytes | CONTENT : SIZE bytes
 
     Where:
     - SIZE    - four first bytes are unsigned int and state the size of the
                 content of the message in bytes.
-    - TYPE    - two next bytes are unsinged int and state the type of
-                the message.
-    - CONTENT - the rest of the bytes convey the data.
+    - CONTENT - the rest of the bytes convey the data in JSON-RPC format.
 
     Every function that can be invoked should return a tuple (Status, Any).
     The first element states a status of the server after executing the
     function.
     The second element can be any additional information.
     """
-    def __init__(self, host: str, port: int) -> None:
+
+    def __init__(self, host: str, port: int, encoding_format: str = 'UTF-8'):
         """
         Creates the instance of CommunicationBackend.
 
@@ -43,8 +44,11 @@ class CommunicationBackend(object):
         port : str
             Application port that is going to be used.
         """
+        super().__init__()
+
         self.host = host
         self.port = port
+        self.encoding_format = encoding_format
 
         self.server_socket = None
         self.client_socket = None
@@ -56,14 +60,14 @@ class CommunicationBackend(object):
 
     def register_callback(
             self,
-            message_type: MessageType,
+            message_type: str,
             callback: Callable[..., None],
             *args) -> None:
         self.callbacks[message_type].append((callback, args))
 
     def unregister_callback(
             self,
-            message_type: MessageType,
+            message_type: str,
             callback: Callable[..., None]) -> None:
         self.callbacks[message_type] = [
             c for c in self.callbacks[message_type][0]
@@ -91,7 +95,7 @@ class CommunicationBackend(object):
         self.log.info('Server was initialized')
         return OutputTuple(Status.SERVER_INITIALIZED, None)
 
-    def initialize_client(self) -> OutputTuple:
+    def initialize_client(self, jsonRPCMethods: object) -> OutputTuple:
         """
         Initializes and connects the client socket.
 
@@ -100,6 +104,7 @@ class CommunicationBackend(object):
         OutputTuple :
             Where Status states whether the connection was successful.
         """
+        self.register_methods(jsonRPCMethods)
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.client_socket.connect((self.host, self.port))
         self.log.info('Client was initialized and connected')
@@ -200,6 +205,20 @@ class CommunicationBackend(object):
             if out.status == Status.CONNECTION_CLOSED:
                 return out
 
+    def start_json_rpc_client(self):
+        """
+        This function run JSON-RPC client, as long as connection is not closed.
+        """
+        while True:
+            # If the message has already been received and stored in the buffer
+            # but has not been parsed
+            self.respond_to_message()
+
+            # If the message has not been received yet
+            out = self._receive_message()
+            if out.status == Status.CONNECTION_CLOSED:
+                return out
+
     def _receive_message(
             self,
             timeout: Optional[float] = None
@@ -250,25 +269,18 @@ class CommunicationBackend(object):
 
         return OutputTuple(Status.NOTHING, None)
 
-    def parse_collected_data(self) -> OutputTuple:
+    def _parse_collected_data(self) -> Optional[bytes]:
         """
-        Collects all received bytes and checks whether collected a full
-        message. If a complete message is collected then it is removed
-        from the `collected_message` buffer and returned.
-
-        Messages are of format:
-        SIZE : 4 bytes | TYPE : 2 bytes | CONTENT : SIZE bytes
+        Collects received message and return it.
 
         Returns
         -------
-        OutputTuple :
-            Where Status states whether there is data to be read and the
-            data argument is either a None or a message received from the
-            client.
+        Optional[bytes] :
+            Received message or None if full message is not ready
         """
         # Checking whether a header of the message was received
-        if len(self.collected_data) < 6:
-            return OutputTuple(Status.NOTHING, None)
+        if len(self.collected_data) < 4:
+            return None
 
         content_size = int.from_bytes(
             self.collected_data[:4],
@@ -278,28 +290,61 @@ class CommunicationBackend(object):
 
         # Checking whether a full message was received.
         if len(self.collected_data) - 4 < content_size:
-            return OutputTuple(Status.NOTHING, None)
+            return None
 
         # Collecting the message and removing the bytes from the buffer.
         message = self.collected_data[4:4 + content_size]
         self.collected_data = self.collected_data[4 + content_size:]
+        return message
 
-        message_type = MessageType.from_bytes(message[:2])
-        message_content = message[2:]
+    def parse_collected_data(self) -> OutputTuple:
+        """
+        Collects all received bytes and checks whether collected a full
+        message. If a complete message is collected then it is removed
+        from the `collected_message` buffer and returned.
+
+        Messages are of format:
+        SIZE : 4 bytes | CONTENT : SIZE bytes
+
+        Returns
+        -------
+        OutputTuple :
+            Where Status states whether there is data to be read and the
+            data argument is either a None or a message received from the
+            client.
+        """
+        message = self._parse_collected_data()
+        if not message:
+            return OutputTuple(Status.NOTHING, None)
+
+        message_content = json.loads(message.decode('UTF-8'))
+        message_type = message_content["method"] \
+            if "method" in message_content else None
 
         # Invoke callbacks registered for this message type
-        for callback in self.callbacks[message_type]:
+        for callback in self.callbacks.get(message_type, []):
             fun, args = callback
             self.log.info(f'Invoking callback for {message_type} message')
             fun(message_type, message_content, self, *args)
 
         return OutputTuple(Status.DATA_READY, (message_type, message_content))
 
-    def send_message(
-            self,
-            mtype: MessageType,
-            data: bytes = bytes()
-            ) -> OutputTuple:
+    def respond_to_message(self):
+        """
+        Respond to received JSON-RPC message.
+
+        Dispatch message to registered method
+        and respond back with returend value.
+        """
+        message = self._parse_collected_data()
+        if not message:
+            return OutputTuple(Status.NOTHING, None)
+
+        response = self.generate_json_rpc_response(message)
+
+        self.send_jsonrpc_message(response.json)
+
+    def send_message(self, mtype: str, data: Dict) -> OutputTuple:
         """
         Sends a message of a specified type and content.
 
@@ -316,7 +361,26 @@ class CommunicationBackend(object):
             the data argument is either a None or an exception that was
             raised while sending the message.
         """
-        return self._send_message(mtype.to_bytes() + data)
+        return self._send_message(mtype.encode(self.encoding_format) + data)
+
+    def send_jsonrpc_message(self, data: Dict) -> OutputTuple:
+        """
+        Sends a message of a specified type and content.
+
+        ----------
+        data : bytes, optional
+            Content of the message compatible with JSON RPC.
+
+        Returns
+        -------
+        OutputTuple :
+            Where Status states whether sending the message was successful and
+            the data argument is either a None or an exception that was
+            raised while sending the message.
+        """
+        return self._send_message(
+            json.dumps(data, ensure_ascii=False).encode(self.encoding_format)
+        )
 
     def _send_message(
             self,
