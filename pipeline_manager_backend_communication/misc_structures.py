@@ -9,32 +9,17 @@ from typing import NamedTuple, Tuple, Union
 class MessageType(Enum):
     """
     Enum that is used do specify a message type.
+    Used for 'type' in returned message.
 
-    Those messages should only be used by the external application:
     * OK - type indicating success. Should only be used by the client.
     * ERROR - type indicating error. Should only be used by the client.
+    * PROGRESS - type indicating progress message.
     * WARNING - type indicating warning. Should only be used by the client.
-
-    Those messages should only be used by Pipeline Manager:
-    * VALIDATE - type indicating that the message is a validation request.
-    * SPECIFICATION - type indicating that the message is a specification
-        request.
-    * RUN - type indicating that the message is a request to run sent dataflow.
-    * IMPORT - type indicating that the message is a request to import sent
-        dataflow into Pipeline Manager graph format from the external
-        application format.
-    * EXPORT - type indicating that the message is a request to export and
-        save a sent dataflow in external application's format.
     """
     OK = 0
     ERROR = 1
-    VALIDATE = 2
-    SPECIFICATION = 3
-    RUN = 4
-    IMPORT = 5
-    EXPORT = 6
-    PROGRESS = 7
-    WARNING = 8
+    PROGRESS = 2
+    WARNING = 3
 
     def to_bytes(self) -> bytes():
         """
