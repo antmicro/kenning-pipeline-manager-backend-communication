@@ -221,7 +221,7 @@ class JSONRPCBase:
         method: str,
         params: Optional[Dict] = None,
         non_blocking: bool = False,
-    ) -> Optional[Dict]:
+    ) -> Union[int, Dict]:
         """
         Creates and sends request for method with specified params.
 
@@ -237,20 +237,20 @@ class JSONRPCBase:
 
         Returns
         -------
-        Optional[Dict] :
+        Union[int, Dict]
             Received response only when non_blocking is set to False,
-            otherwise returns None
+            otherwise returns ID of request
         """
         response = None
         request = self.generate_request(method, params)
         self.send_jsonrpc_message(request)
+        _id = request['id']
         if not non_blocking:
-            _id = request['id']
             event = threading.Event()
             self.__not_resolved[_id] = (request, event)
             event.wait()
             response = self.__responses.pop(_id)
-        return response
+        return response if response else _id
 
     def receive_response(self, response: Dict):
         """
