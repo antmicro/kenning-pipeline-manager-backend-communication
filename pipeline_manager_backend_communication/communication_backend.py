@@ -219,7 +219,10 @@ class CommunicationBackend(JSONRPCBase):
             return OutputTuple(Status.CONNECTION_CLOSED, ex)
 
         if ready and self.client_socket:
-            data = self.client_socket.recv(self.packet_size)
+            try:
+                data = self.client_socket.recv(self.packet_size)
+            except BlockingIOError:
+                return OutputTuple(Status.NOTHING, None)
             self.collected_data += data
 
             if len(data) == 0:
