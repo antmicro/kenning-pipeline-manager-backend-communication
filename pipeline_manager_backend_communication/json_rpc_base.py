@@ -59,6 +59,10 @@ class JSONRPCBase:
         else:
             self._json_rpc_client()
 
+    def _generate_send_response(self, data: Dict):
+        response = self.generate_json_rpc_response(data)
+        self.send_jsonrpc_message(response.json)
+
     def _json_rpc_client(self):
         """
         This function run JSON-RPC client, as long as connection is not closed.
@@ -70,8 +74,13 @@ class JSONRPCBase:
             if out.status == Status.DATA_READY:
                 if out.data[0]:
                     # Method is defined -- message is a request
-                    response = self.generate_json_rpc_response(out.data[1])
-                    self.send_jsonrpc_message(response.json)
+                    if threading.current_thread() == self.client_thread:
+                        threading.Thread(
+                            target=self._generate_send_response,
+                            args=(out.data[1],)
+                        ).start()
+                    else:
+                        self._generate_send_response(out.data[1])
                 else:
                     # There is not method -- message is a response
                     self.receive_response(out.data[1])
@@ -82,7 +91,7 @@ class JSONRPCBase:
                                f'with data {out.data}')
 
             # If the message has not been received yet
-            out = self._receive_message()
+            out = self._receive_message(timeout=1.0)
             if out.status == Status.CONNECTION_CLOSED:
                 return out
 
@@ -353,6 +362,7 @@ class JSONRPCBase:
             try:
                 response = func(**kwargs)
             except Exception as ex:
+                self.log.error(ex)
                 raise JSONRPCDispatchException(
                     code=-3, message=str(ex)
                 ) from ex
@@ -385,6 +395,10 @@ class JSONRPCBase:
             if name.startswith('_'):
                 continue
             if specification:
+                if not isinstance(
+                    jsonRPCMethods.__getattribute__(name), Callable
+                ):
+                    continue
                 if name not in specification[0][f'{methods}_endpoints']:
                     self.log.warn(f"Method not in specification: {name}")
                     continue
