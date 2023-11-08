@@ -43,6 +43,10 @@ class RPCMethods:
         # ...
         return {'type': MessageType.OK.value}
 
+    def stop_dataflow(self) -> Dict:
+        # ...
+        return {'type': MessageType.OK.value}
+
     def export_dataflow(self, dataflow: Dict) -> Dict:
         # ...
         return {'type': MessageType.OK.value, 'content': dataflow}
