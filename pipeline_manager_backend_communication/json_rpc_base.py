@@ -10,7 +10,6 @@ from jsonrpc.jsonrpc import JSONRPCRequest
 from jsonrpc.jsonrpc2 import JSONRPC20Request
 from jsonrpc.exceptions import JSONRPCDispatchException
 from importlib.resources import path
-from jsonschema import RefResolver, Draft201909Validator, ValidationError
 from typing import Optional, Callable, Dict, Tuple, Union, List
 
 from pipeline_manager_backend_communication.misc_structures import (
@@ -24,7 +23,8 @@ class JSONRPCBase:
     Class containing basic features for sending and reveiving JSON-RPC messages
     """
 
-    def __init__(self):
+    def __init__(self, receive_message_timeout: float = 0.1):
+        self.receive_message_timeout = receive_message_timeout
         self.api_specification = None
         self.dispatcher = None
         self.log = logging.getLogger()
@@ -60,12 +60,23 @@ class JSONRPCBase:
             self._json_rpc_client()
 
     def _generate_send_response(self, data: Dict):
+        """
+        Generates response to JSON-RPC request and sends it back.
+
+        It can be run in separate thread.
+
+        Parameters
+        ----------
+        data : Dict
+            JSON-RPC request
+        """
         response = self.generate_json_rpc_response(data)
-        self.send_jsonrpc_message(response.json)
+        if response:
+            self.send_jsonrpc_message(response.json)
 
     def _json_rpc_client(self):
         """
-        This function run JSON-RPC client, as long as connection is not closed.
+        This method run JSON-RPC client, as long as connection is not closed.
         """
         while True:
             # If the message has already been received and stored in the buffer
@@ -91,7 +102,7 @@ class JSONRPCBase:
                                f'with data {out.data}')
 
             # If the message has not been received yet
-            out = self._receive_message(timeout=1.0)
+            out = self._receive_message(timeout=self.receive_message_timeout)
             if out.status == Status.CONNECTION_CLOSED:
                 return out
 
@@ -324,41 +335,23 @@ class JSONRPCBase:
                 self.api_specification = None
         return self.api_specification
 
-    def validation_middleware(
-        self,
-        func: Callable,
-        specification: Dict,
-        common_types: Dict
-    ) -> Callable:
+    def wrapper_middleware(self, func: Callable) -> Callable:
         """
-        Decorator validating JSON-RPC method's params and return.
+        Decorator caching exception from JSON-RPC methods
+        and creating JSON-RPC error response from them.
 
         Parameters
         ----------
         func : Callable
             JSON-RPC method
-        specification : Dict
-            Dictionary with 'params' and 'returns' values containing schema
-        common_types : Dict
-            Schema with types used in specification
 
         Returns
         -------
         Callable :
             Wrapped func with validation
         """
-        resolver = RefResolver.from_schema(common_types)
-        validator_params = Draft201909Validator(
-            specification['params'], resolver=resolver)
-        validator_returns = Draft201909Validator(
-            specification['returns'], resolver=resolver)
 
         def _method_with_validation(**kwargs):
-            try:
-                validator_params.validate(kwargs)
-            except ValidationError as ex:
-                raise JSONRPCDispatchException(
-                    code=-1, message=f"Invalid params\n{str(ex)}") from ex
             try:
                 response = func(**kwargs)
             except Exception as ex:
@@ -366,11 +359,6 @@ class JSONRPCBase:
                 raise JSONRPCDispatchException(
                     code=-3, message=str(ex)
                 ) from ex
-            try:
-                validator_returns.validate(response)
-            except ValidationError as ex:
-                raise JSONRPCDispatchException(
-                    code=-2, message=f"Invalid response\n{str(ex)}") from ex
             return response
 
         return _method_with_validation
@@ -392,23 +380,19 @@ class JSONRPCBase:
             self.dispatcher = Dispatcher()
         specification = self.get_specification()
         for name in jsonRPCMethods.__dir__():
-            if name.startswith('_'):
+            if name.startswith('_') or not isinstance(
+                jsonRPCMethods.__getattribute__(name), Callable
+            ):
                 continue
-            if specification:
-                if not isinstance(
-                    jsonRPCMethods.__getattribute__(name), Callable
-                ):
-                    continue
-                if name not in specification[0][f'{methods}_endpoints']:
-                    self.log.warn(f"Method not in specification: {name}")
-                    continue
-                self.dispatcher[name] = self.validation_middleware(
-                    jsonRPCMethods.__getattribute__(name),
-                    specification[0][f'{methods}_endpoints'][name],
-                    specification[1],
-                )
-            else:
-                self.dispatcher[name] = jsonRPCMethods.__getattribute__(name)
+            if (
+                specification and
+                name not in specification[0][f'{methods}_endpoints']
+            ):
+                self.log.warn(f"Method not in specification: {name}")
+                continue
+            self.dispatcher[name] = self.wrapper_middleware(
+                jsonRPCMethods.__getattribute__(name),
+            )
 
     def generate_json_rpc_response(
         self,
