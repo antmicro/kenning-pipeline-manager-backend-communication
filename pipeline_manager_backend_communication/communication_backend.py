@@ -32,7 +32,13 @@ class CommunicationBackend(JSONRPCBase):
     The second element can be any additional information.
     """
 
-    def __init__(self, host: str, port: int, encoding_format: str = 'UTF-8'):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        receive_message_timeout: float = 0.1,
+        encoding_format: str = 'UTF-8',
+    ):
         """
         Creates the instance of CommunicationBackend.
 
@@ -42,8 +48,12 @@ class CommunicationBackend(JSONRPCBase):
             IPv4 of the socket that is going to be used.
         port : str
             Application port that is going to be used.
+        receive_message_timeout : float
+            Timeout for receiving message.
+        encoding_format : str
+            Encoding format used to decode and encode messages.
         """
-        super().__init__()
+        super().__init__(receive_message_timeout)
 
         self.host = host
         self.port = port
