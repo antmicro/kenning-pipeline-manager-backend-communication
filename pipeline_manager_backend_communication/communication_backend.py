@@ -233,6 +233,8 @@ class CommunicationBackend(JSONRPCBase):
                 data = self.client_socket.recv(self.packet_size)
             except BlockingIOError:
                 return OutputTuple(Status.NOTHING, None)
+            except ConnectionResetError:
+                return OutputTuple(Status.CONNECTION_CLOSED, None)
             self.collected_data += data
 
             if len(data) == 0:
@@ -263,8 +265,9 @@ class CommunicationBackend(JSONRPCBase):
         self.collected_data = self.collected_data[4 + content_size:]
 
         message_content = json.loads(message.decode('UTF-8'))
-        message_type = message_content["method"] \
-            if "method" in message_content else None
+        message_type = message_content["method"] if (
+            isinstance(message_content, Dict) and "method" in message_content
+        ) else None
 
         # Invoke callbacks registered for this message type
         for callback in self.callbacks.get(message_type, []):
