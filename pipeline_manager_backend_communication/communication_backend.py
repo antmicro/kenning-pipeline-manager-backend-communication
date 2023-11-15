@@ -153,7 +153,10 @@ class CommunicationBackend(JSONRPCBase):
         OutputTuple :
             Where Status states whether the initialization was successful.
         """
-        socket, addr = self.server_socket.accept()
+        if self.server_socket:
+            socket, addr = self.server_socket.accept()
+        else:
+            return OutputTuple(Status.ERROR, None)
         if self.client_socket is not None:
             self.log.info('Different client already connected')
             socket.close()
@@ -209,7 +212,7 @@ class CommunicationBackend(JSONRPCBase):
                 return out
 
             # If the message has not been received yet
-            out = self._receive_message()
+            out = self._receive_message(self.receive_message_timeout)
             if out.status == Status.CONNECTION_CLOSED:
                 return out
 
