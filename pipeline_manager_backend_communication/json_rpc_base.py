@@ -14,7 +14,8 @@ from typing import Optional, Callable, Dict, Tuple, Union, List
 
 from pipeline_manager_backend_communication.misc_structures import (
     OutputTuple,
-    Status
+    Status,
+    CustomErrorCode,
 )
 
 
@@ -357,7 +358,8 @@ class JSONRPCBase:
             except Exception as ex:
                 self.log.error(ex)
                 raise JSONRPCDispatchException(
-                    code=-3, message=str(ex)
+                    code=CustomErrorCode.EXCEPTION_RAISED.value,
+                    message=str(ex),
                 ) from ex
             return response
 
