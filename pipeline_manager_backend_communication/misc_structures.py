@@ -93,3 +93,14 @@ class OutputTuple(NamedTuple):
     """
     status: Status
     data: Union[Tuple[MessageType, bytes], Exception, None]
+
+
+class CustomErrorCode(Enum):
+    """
+    Enum defining custom error codes of JSON-RPC error response.
+
+    EXCEPTION_RAISED - used when JSON-RPC method raises exception
+    EXTERNAL_APPLICATION_NOT_CONNECTED - used when
+    """
+    EXCEPTION_RAISED = -1
+    EXTERNAL_APPLICATION_NOT_CONNECTED = -2
