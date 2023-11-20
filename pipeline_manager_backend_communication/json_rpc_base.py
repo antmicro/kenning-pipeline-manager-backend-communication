@@ -2,13 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import json
 import logging
-import threading
+import traceback
 from jsonrpc import JSONRPCResponseManager, Dispatcher
 from jsonrpc.jsonrpc import JSONRPCRequest
-from jsonrpc.jsonrpc2 import JSONRPC20Request
-from jsonrpc.exceptions import JSONRPCDispatchException
+from jsonrpc.jsonrpc2 import (
+    JSONRPC20Request, JSONRPC20Response,
+    JSONRPC20BatchRequest, JSONRPC20BatchResponse,
+)
+from jsonrpc.exceptions import JSONRPCDispatchException, JSONRPCMethodNotFound
 from importlib.resources import path
 from typing import Optional, Callable, Dict, Tuple, Union, List
 
@@ -24,19 +28,26 @@ class JSONRPCBase:
     Class containing basic features for sending and reveiving JSON-RPC messages
     """
 
-    def __init__(self, receive_message_timeout: float = 0.1):
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop = None,
+        receive_message_timeout: float = None,
+    ):
         self.receive_message_timeout = receive_message_timeout
         self.api_specification = None
         self.dispatcher = None
         self.log = logging.getLogger()
 
-        self.client_thread: threading.Thread = None
+        if loop:
+            self.loop = loop
+        else:
+            self.loop = asyncio.get_event_loop()
+        # self.client_thread: threading.Thread = None
 
         self.__request_id = 0
-        self.__not_resolved: Dict[int, Tuple[JSONRPC20Request, threading.Event]] = dict()  # noqa: E501
-        self.__responses: Dict[int, Dict] = dict()
+        self.__not_resolved: Dict[int, asyncio.Future[Dict]] = dict()
 
-    def start_json_rpc_client(self, separate_thread: bool = False):
+    async def start_json_rpc_client(self, separate_thread: bool = False):
         """
         Starts JSON-RPC client which waits for messages and process them.
 
@@ -50,17 +61,9 @@ class JSONRPCBase:
         Exception :
             If previous thread is still alive
         """
-        if self.client_thread and self.client_thread.is_alive():
-            raise Exception(
-                "Only one client thread can be alive at the same time"
-            )
-        if separate_thread:
-            self.client_thread = threading.Thread(target=self._json_rpc_client)
-            self.client_thread.start()
-        else:
-            self._json_rpc_client()
+        await self._json_rpc_client()
 
-    def _generate_send_response(self, data: Dict):
+    async def _generate_send_response(self, data: Dict):
         """
         Generates response to JSON-RPC request and sends it back.
 
@@ -71,28 +74,32 @@ class JSONRPCBase:
         data : Dict
             JSON-RPC request
         """
-        response = self.generate_json_rpc_response(data)
+        response = await self.generate_json_rpc_response(data)
         if response:
-            self.send_jsonrpc_message(response.json)
+            await self.send_jsonrpc_message(response.json)
 
-    def _json_rpc_client(self):
+    async def _json_rpc_client(self):
         """
         This method run JSON-RPC client, as long as connection is not closed.
         """
         while True:
+            message = await self._receive_message(
+                timeout=self.receive_message_timeout
+            )
+            if message.status == Status.CONNECTION_CLOSED:
+                return message
+            elif message.status != Status.DATA_READY:
+                continue
+
             # If the message has already been received and stored in the buffer
             # but has not been parsed
-            out = self.parse_collected_data()
+            out = await self.parse_collected_data(message.data)
             if out.status == Status.DATA_READY:
                 if out.data[0]:
                     # Method is defined -- message is a request
-                    if threading.current_thread() == self.client_thread:
-                        threading.Thread(
-                            target=self._generate_send_response,
-                            args=(out.data[1],)
-                        ).start()
-                    else:
+                    self.loop.create_task(
                         self._generate_send_response(out.data[1])
+                    )
                 else:
                     # There is not method -- message is a response
                     self.receive_response(out.data[1])
@@ -102,17 +109,12 @@ class JSONRPCBase:
                 self.log.error(f'Unexpected status received {out.status}, '
                                f'with data {out.data}')
 
-            # If the message has not been received yet
-            out = self._receive_message(timeout=self.receive_message_timeout)
-            if out.status == Status.CONNECTION_CLOSED:
-                return out
-
-    def send_jsonrpc_message(self, data: Dict) -> OutputTuple:
+    async def send_jsonrpc_message(self, data: Dict) -> OutputTuple:
         """
         Sends a message of a specified type and content.
 
         ----------
-        data : bytes, optional
+        data : Dict
             Content of the message compatible with JSON RPC.
 
         Returns
@@ -124,7 +126,7 @@ class JSONRPCBase:
         """
         raise NotImplementedError
 
-    def parse_collected_data(self) -> OutputTuple:
+    async def parse_collected_data(self, message: bytes) -> OutputTuple:
         """
         Collects all received bytes and checks whether collected a full
         message. If a complete message is collected then it is removed
@@ -132,6 +134,11 @@ class JSONRPCBase:
 
         Messages are of format:
         SIZE : 4 bytes | CONTENT : SIZE bytes
+
+        Parameters
+        ----------
+        message : bytes
+            Received bytes
 
         Returns
         -------
@@ -142,7 +149,7 @@ class JSONRPCBase:
         """
         raise NotImplementedError
 
-    def _receive_message(
+    async def _receive_message(
         self,
         timeout: Optional[float] = None
     ) -> OutputTuple:
@@ -218,7 +225,7 @@ class JSONRPCBase:
         """
         return JSONRPC20Request(method, params, None, True).data
 
-    def notify(
+    async def notify(
         self,
         method: str,
         params: Optional[Dict] = None,
@@ -235,14 +242,13 @@ class JSONRPCBase:
             Parameters of the notification's method
         """
         request = self.generate_notification(method, params)
-        self.send_jsonrpc_message(request)
+        await self.send_jsonrpc_message(request)
 
-    def request(
+    async def request(
         self,
         method: str,
         params: Optional[Dict] = None,
-        non_blocking: bool = False,
-    ) -> Union[int, Dict]:
+    ) -> Dict:
         """
         Creates and sends request for method with specified params.
 
@@ -264,14 +270,12 @@ class JSONRPCBase:
         """
         response = None
         request = self.generate_request(method, params)
-        self.send_jsonrpc_message(request)
         _id = request['id']
-        if not non_blocking:
-            event = threading.Event()
-            self.__not_resolved[_id] = (request, event)
-            event.wait()
-            response = self.__responses.pop(_id)
-        return response if response else _id
+        self.__not_resolved[_id] = self.loop.create_future()
+        await self.send_jsonrpc_message(request)
+        response = await self.__not_resolved[_id]
+        del self.__not_resolved[_id]
+        return response
 
     def receive_response(self, response: Dict):
         """
@@ -286,30 +290,9 @@ class JSONRPCBase:
         """
         _id = response['id']
         if _id in self.__not_resolved:
-            event = self.__not_resolved.pop(_id)
-            self.__responses[_id] = response
-            event[1].set()
-
-    def response_for_id(self, _id: int) -> Optional[Dict]:
-        """
-        Get response for request with specified ID.
-
-        If response has not been received yet or has already been taken,
-        returns None.
-
-        Parameters
-        ----------
-        _id : int
-            ID of requested response
-
-        Returns
-        -------
-        Optional[Dict] :
-            Response with specified ID or None
-        """
-        if _id not in self.__not_resolved and _id in self.__responses:
-            return self.__responses.pop(_id)
-        return None
+            self.__not_resolved[_id].set_result(response)
+        else:
+            self.log.error(f'Wrong ID of received message: {_id}')
 
     def get_specification(self) -> Optional[Tuple[Dict, Dict]]:
         """
@@ -352,11 +335,20 @@ class JSONRPCBase:
             Wrapped func with validation
         """
 
-        def _method_with_validation(**kwargs):
+        async def _method_with_validation(**kwargs):
             try:
                 response = func(**kwargs)
+                if asyncio.iscoroutine(response):
+                    response = await response
+            except JSONRPCDispatchException:
+                raise
             except Exception as ex:
                 self.log.error(ex)
+                traceback.print_exception(
+                    etype=type(ex),
+                    value=ex,
+                    tb=ex.__traceback__,
+                )
                 raise JSONRPCDispatchException(
                     code=CustomErrorCode.EXCEPTION_RAISED.value,
                     message=str(ex),
@@ -396,7 +388,7 @@ class JSONRPCBase:
                 jsonRPCMethods.__getattribute__(name),
             )
 
-    def generate_json_rpc_response(
+    async def generate_json_rpc_response(
         self,
         data: Union[str, Dict, List[Dict]],
     ) -> Union[Dict, List[Dict]]:
@@ -419,8 +411,82 @@ class JSONRPCBase:
                 "No JSON-RPC method register, cannot generate response")
             return None
         if isinstance(data, (str, bytes)):
-            return JSONRPCResponseManager.handle(data, self.dispatcher)
-        return JSONRPCResponseManager.handle_request(
+            return await AsyncJSONRPCResponseManager.handle(
+                data, self.dispatcher)
+        return await AsyncJSONRPCResponseManager.handle_request(
             JSONRPCRequest.from_data(data),
             self.dispatcher
         )
+
+
+class AsyncJSONRPCResponseManager(JSONRPCResponseManager):
+    @classmethod
+    async def _response(
+        cls,
+        request: JSONRPC20Request,
+        dispatcher: Dispatcher,
+        method: Callable,
+        context: Optional[Dict] = None,
+    ):
+        try:
+            kwargs = request.kwargs
+            if context is not None:
+                context_arg = dispatcher.context_arg_for_method.get(
+                    request.method
+                )
+                if context_arg:
+                    context["request"] = request
+                    kwargs[context_arg] = context
+            result = await method(*request.args, **kwargs)
+            return JSONRPC20Response(_id=request._id, result=result)
+        except JSONRPCDispatchException as e:
+            return JSONRPC20Response(_id=request._id, error=e.error._data)
+
+    @classmethod
+    async def _get_responses(
+        cls,
+        requests: List[JSONRPC20Request],
+        dispatcher: Dispatcher,
+        context: Optional[Dict] = None,
+    ):
+        responses = []
+        methods = []
+        valid_requests = []
+        for request in requests:
+            if request.method in dispatcher:
+                methods.append(dispatcher[request.method])
+                valid_requests.append(request)
+                continue
+            responses.append(JSONRPC20Response(
+                _id=request._id, error=JSONRPCMethodNotFound()._data
+            ))
+        v_responses: List[JSONRPC20Response] = await asyncio.gather(*[
+            cls._response(request, dispatcher, method, context)
+            for request, method in zip(valid_requests, methods)
+        ])
+        return responses + [r for r in v_responses if r._id]
+
+    @classmethod
+    async def handle_request(
+        cls,
+        request: Union[JSONRPC20Request, JSONRPC20BatchRequest],
+        dispatcher: Dispatcher,
+        context: Optional[Dict] = None,
+    ):
+        rs = request if isinstance(request, JSONRPC20BatchRequest) \
+            else [request]
+        responses = [
+            r for r in await cls._get_responses(rs, dispatcher, context)
+            if r is not None
+        ]
+
+        # notifications
+        if not responses:
+            return
+
+        if isinstance(request, JSONRPC20BatchRequest):
+            response = JSONRPC20BatchResponse(*responses)
+            response.request = request
+            return response
+        else:
+            return responses[0]
