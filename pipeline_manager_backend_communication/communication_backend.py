@@ -2,17 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from collections import defaultdict
-import select
-import socket
+import asyncio
 import json
-from typing import Optional, Callable, Dict
+import signal
+from collections import defaultdict
+from typing import Optional, Callable, Dict, List
+from jsonrpc.exceptions import JSONRPCDispatchException
 
-from pipeline_manager_backend_communication.misc_structures import OutputTuple, Status  # noqa: E501
+from pipeline_manager_backend_communication.misc_structures import OutputTuple, Status, CustomErrorCode  # noqa: E501
 from pipeline_manager_backend_communication.json_rpc_base import JSONRPCBase
 
 
-class CommunicationBackend(JSONRPCBase):
+class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
     """
     TCP-based communication tool with a single client.
     It can be used both to create a TCP client and a TCP server part.
@@ -36,8 +37,10 @@ class CommunicationBackend(JSONRPCBase):
         self,
         host: str,
         port: int,
-        receive_message_timeout: float = 0.1,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        receive_message_timeout: float = None,
         encoding_format: str = 'UTF-8',
+        add_signal_handler: bool = False,
     ):
         """
         Creates the instance of CommunicationBackend.
@@ -52,19 +55,109 @@ class CommunicationBackend(JSONRPCBase):
             Timeout for receiving message.
         encoding_format : str
             Encoding format used to decode and encode messages.
+        add_signal_handler : bool
+            Add SIGINT hadler to close connection and shutdown the server.
         """
-        super().__init__(receive_message_timeout)
+        super().__init__(loop, receive_message_timeout)
 
         self.host = host
         self.port = port
         self.encoding_format = encoding_format
 
-        self.server_socket = None
-        self.client_socket = None
+        self.server = None
+        self.client_transport = None
         self.packet_size = 4096
         self.collected_data = bytes()
 
         self.callbacks = defaultdict(list)
+
+        self.__connected = False
+        self.__can_write = asyncio.Event()
+        self.__can_write.set()
+
+        self.__wait_for_client_future: asyncio.Future[OutputTuple] = None
+        self.__wait_for_client_semaphore = asyncio.Semaphore(1)
+
+        self.__wait_for_message_future: List[asyncio.Future[bytes]] = []
+        self.__wait_for_message_semaphore = asyncio.Semaphore(1)
+
+        if add_signal_handler:
+            self.loop.add_signal_handler(
+                signal.SIGINT,
+                lambda: self.client_transport.abort()
+                if self.client_transport else None,
+            )
+
+    # asyncio.Protocol methods
+
+    def connection_made(self, transport: asyncio.Transport):
+        if self.client_transport is not None:
+            self.log.info('Different client already connected')
+            transport.close()
+            if not self.__wait_for_client_future.cancelled():
+                self.__wait_for_client_future.set_result(
+                    OutputTuple(Status.CLIENT_IGNORED, None)
+                )
+        else:
+            self.log.info('Client connected')
+            self.client_transport = transport
+            self.__connected = True
+            self.__wait_for_message_future = [self.loop.create_future()]
+            if self.server and not self.__wait_for_client_future.cancelled():
+                self.__wait_for_client_future.set_result(
+                    OutputTuple(Status.CLIENT_CONNECTED, None)
+                )
+
+    def data_received(self, data: bytes):
+        self.collected_data += data
+        valid, size = self.check_message_lenght()
+        if valid:
+            received = self.collected_data[4:4 + size]
+            self.collected_data = self.collected_data[4 + size:]
+            if not self.__wait_for_message_future[-1].done():
+                self.__wait_for_message_future[-1].set_result(received)
+                self.__wait_for_message_future.append(
+                    self.loop.create_future()
+                )
+            elif self.__wait_for_message_future[-1].cancelled():
+                self.__wait_for_message_future.append(
+                    self.loop.create_future()
+                )
+                self.__wait_for_message_future[-1].set_result(received)
+                self.__wait_for_message_future.append(
+                    self.loop.create_future()
+                )
+
+    def eof_received(self):
+        self.log.warning('EOF received')
+
+    def connection_lost(self, exc: Optional[Exception]):
+        self.__connected = False
+        if self.client_transport and not self.client_transport.is_closing():
+            self.client_transport.close()
+        self.client_transport = None
+        # Cancel currently used awaits
+        if self.__wait_for_client_future and \
+                not self.__wait_for_client_future.done():
+            if exc:
+                self.__wait_for_client_future.cancel(str(exc))
+            else:
+                self.__wait_for_client_future.cancel('Connection lost')
+        if not self.__wait_for_message_future[-1].done():
+            if exc:
+                self.__wait_for_message_future[-1].cancel(str(exc))
+            else:
+                self.__wait_for_message_future[-1].cancel('Connection lost')
+
+    def pause_writing(self):
+        if self.__can_write.is_set():
+            self.__can_write.clear()
+
+    def resume_writing(self):
+        if not self.__can_write.is_set():
+            self.__can_write.set()
+
+    # CommunicationBackend methods
 
     def register_callback(
             self,
@@ -82,7 +175,7 @@ class CommunicationBackend(JSONRPCBase):
             if callback != c
         ]
 
-    def initialize_server(self) -> OutputTuple:
+    async def initialize_server(self) -> OutputTuple:
         """
         Initializes the server socket.
 
@@ -91,19 +184,18 @@ class CommunicationBackend(JSONRPCBase):
         OutputTuple :
             Where Status states whether the initialization was successful.
         """
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(
-            socket.SOL_SOCKET,
-            socket.SO_REUSEADDR,
-            1
+
+        self.server = await self.loop.create_server(
+            lambda: self,
+            host=self.host,
+            port=self.port,
+            reuse_address=True,
+            start_serving=False,
         )
-        self.server_socket.bind((self.host, self.port))
-        self.server_socket.setblocking(False)
-        self.server_socket.listen(1)
         self.log.info('Server was initialized')
         return OutputTuple(Status.SERVER_INITIALIZED, None)
 
-    def initialize_client(self, jsonRPCMethods: object) -> OutputTuple:
+    async def initialize_client(self, jsonRPCMethods: object) -> OutputTuple:
         """
         Initializes and connects the client socket.
 
@@ -113,15 +205,18 @@ class CommunicationBackend(JSONRPCBase):
             Where Status states whether the connection was successful.
         """
         self.register_methods(jsonRPCMethods)
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.connect((self.host, self.port))
+        self.client_transport, _ = await self.loop.create_connection(
+            lambda: self,
+            host=self.host,
+            port=self.port,
+        )
         self.log.info('Client was initialized and connected')
         return OutputTuple(Status.CLIENT_CONNECTED, None)
 
-    def wait_for_client(
-            self,
-            timeout: Optional[float] = None
-            ) -> OutputTuple:
+    async def wait_for_client(
+        self,
+        timeout: Optional[float] = None,
+    ) -> OutputTuple:
         """
         Listens on the server socket for a client to connect.
 
@@ -137,35 +232,24 @@ class CommunicationBackend(JSONRPCBase):
         OutputTuple :
             Where Status states whether a client was connected.
         """
-        self.log.info(f'Server is listening on {self.host}:{self.port}')
-        ready, _, _ = select.select([self.server_socket], [], [], timeout)
-        if ready:
-            code = self.accept_client()
-            return code
-        return OutputTuple(Status.NOTHING, None)
-
-    def accept_client(self) -> OutputTuple:
-        """
-        Accepts a client that has connected to the server socket.
-
-        Returns
-        -------
-        OutputTuple :
-            Where Status states whether the initialization was successful.
-        """
-        if self.server_socket:
-            socket, addr = self.server_socket.accept()
-        else:
-            return OutputTuple(Status.ERROR, None)
-        if self.client_socket is not None:
-            self.log.info('Different client already connected')
-            socket.close()
-            return OutputTuple(Status.CLIENT_IGNORED, None)
-        else:
-            self.log.info('Client connected')
-            self.client_socket = socket
-            self.client_socket.setblocking(False)
-        return OutputTuple(Status.CLIENT_CONNECTED, None)
+        await self.__wait_for_client_semaphore.acquire()
+        try:
+            self.__wait_for_client_future = self.loop.create_future()
+            await self.server.start_serving()
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.shield(self.__wait_for_client_future),
+                    timeout=timeout,
+                )
+            except (asyncio.TimeoutError, asyncio.CancelledError) as er:
+                result = OutputTuple(Status.ERROR, er)
+        finally:
+            if self.server and self.server.is_serving():
+                self.server.close()
+                await self.server.wait_closed()
+            self.__wait_for_client_future = None
+            self.__wait_for_client_semaphore.release()
+        return result
 
     @property
     def connected(self):
@@ -187,12 +271,9 @@ class CommunicationBackend(JSONRPCBase):
         bool :
             True if the client socket is connected. False otherwise
         """
-        out = self._receive_message(0)
-        if out.status == Status.CONNECTION_CLOSED:
-            return False
-        return True
+        return self.__connected
 
-    def wait_for_message(self) -> OutputTuple:
+    async def wait_for_message(self) -> OutputTuple:
         """
         This function checks whether a complete message has been received.
         If not it waits until the message is received.
@@ -205,53 +286,40 @@ class CommunicationBackend(JSONRPCBase):
             client.
         """
         while True:
-            # If the message has already been received and stored in the buffer
-            # but has not been parsed
-            out = self.parse_collected_data()
+            message = await self._receive_message(self.receive_message_timeout)
+            if message.status == Status.CONNECTION_CLOSED:
+                return message
+            elif message.status != Status.DATA_READY:
+                continue
+
+            out = await self.parse_collected_data(message.data)
             if out.status == Status.DATA_READY:
                 return out
 
-            # If the message has not been received yet
-            out = self._receive_message(self.receive_message_timeout)
-            if out.status == Status.CONNECTION_CLOSED:
-                return out
-
-    def _receive_message(
+    async def _receive_message(
         self,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
     ) -> OutputTuple:
-        if self.client_socket is None:
+        if self.client_transport is None or self.client_transport.is_closing():
             self.log.info('Cannot receive any messages. Connection is closed.')
             return OutputTuple(Status.CONNECTION_CLOSED, None)
 
-        try:
-            ready, _, _ = select.select([self.client_socket], [], [], timeout)
-        except (Exception, ConnectionResetError) as ex:
-            self.log.info('Error while waiting for the client socket. Aborting.')  # noqa: E501
-            self.disconnect()
-            return OutputTuple(Status.CONNECTION_CLOSED, ex)
-
-        if ready and self.client_socket:
+        async with self.__wait_for_message_semaphore:
+            future = self.__wait_for_message_future[0]
             try:
-                data = self.client_socket.recv(self.packet_size)
-            except BlockingIOError:
+                message = await asyncio.wait_for(
+                    asyncio.shield(future),
+                    timeout=timeout
+                )
+                self.__wait_for_message_future.pop(0)
+                return OutputTuple(Status.DATA_READY, message)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
                 return OutputTuple(Status.NOTHING, None)
-            except ConnectionResetError:
-                return OutputTuple(Status.CONNECTION_CLOSED, None)
-            self.collected_data += data
 
-            if len(data) == 0:
-                self.log.info('Other side closed the connection. Closing the socket')  # noqa: E501
-                self.client_socket.close()
-                self.client_socket = None
-                return OutputTuple(Status.CONNECTION_CLOSED, None)
-
-        return OutputTuple(Status.NOTHING, None)
-
-    def parse_collected_data(self) -> OutputTuple:
+    def check_message_lenght(self) -> bool:
         # Checking whether a header of the message was received
         if len(self.collected_data) < 4:
-            return OutputTuple(Status.NOTHING, None)
+            return False, None
 
         content_size = int.from_bytes(
             self.collected_data[:4],
@@ -260,13 +328,9 @@ class CommunicationBackend(JSONRPCBase):
         )
 
         # Checking whether a full message was received.
-        if len(self.collected_data) - 4 < content_size:
-            return OutputTuple(Status.NOTHING, None)
+        return len(self.collected_data) - 4 >= content_size, content_size
 
-        # Collecting the message and removing the bytes from the buffer.
-        message = self.collected_data[4:4 + content_size]
-        self.collected_data = self.collected_data[4 + content_size:]
-
+    async def parse_collected_data(self, message: bytes) -> OutputTuple:
         message_content = json.loads(message.decode('UTF-8'))
         message_type = message_content["method"] if (
             isinstance(message_content, Dict) and "method" in message_content
@@ -276,38 +340,22 @@ class CommunicationBackend(JSONRPCBase):
         for callback in self.callbacks.get(message_type, []):
             fun, args = callback
             self.log.info(f'Invoking callback for {message_type} message')
-            fun(message_type, message_content, self, *args)
+            if asyncio.iscoroutinefunction(fun):
+                await fun(message_type, message_content, self, *args)
+            else:
+                fun(message_type, message_content, self, *args)
 
         return OutputTuple(Status.DATA_READY, (message_type, message_content))
 
-    def send_message(self, mtype: str, data: Dict) -> OutputTuple:
-        """
-        Sends a message of a specified type and content.
-
-        ----------
-        mtype : MessageType
-            Type of the message.
-        data : bytes, optional
-            Content of the message.
-
-        Returns
-        -------
-        OutputTuple :
-            Where Status states whether sending the message was successful and
-            the data argument is either a None or an exception that was
-            raised while sending the message.
-        """
-        return self._send_message(mtype.encode(self.encoding_format) + data)
-
-    def send_jsonrpc_message(self, data: Dict) -> OutputTuple:
-        return self._send_message(
+    async def send_jsonrpc_message(self, data: Dict) -> OutputTuple:
+        return await self._send_message(
             json.dumps(data, ensure_ascii=False).encode(self.encoding_format)
         )
 
-    def _send_message(
-            self,
-            data: bytes
-            ) -> OutputTuple:
+    async def _send_message(
+        self,
+        data: bytes,
+    ) -> OutputTuple:
         """
         An internal function that adds a length block to the message and sends
         it to the client socket.
@@ -324,31 +372,37 @@ class CommunicationBackend(JSONRPCBase):
             the data argument is either a None or an exception that was
             raised while sending the message.
         """
+        if self.client_transport is None or self.client_transport.is_closing():
+            raise JSONRPCDispatchException(
+                code=CustomErrorCode.EXTERNAL_APPLICATION_NOT_CONNECTED.value,
+                message="Message cannot be send, application is not connected"
+            )
+        await self.__can_write.wait()
+
         length = (len(data)).to_bytes(4, byteorder='big', signed=False)
         message = length + data
-        try:
-            self.client_socket.sendall(message)
-            return OutputTuple(Status.DATA_SENT, None)
-        except Exception as ex:
-            self.log.exception('Something went wrong when sending a message. Disconnecting')  # noqa: E501
-            self.disconnect()
-            return OutputTuple(Status.ERROR, ex)
+        self.client_transport.write(message)
+        return OutputTuple(Status.DATA_SENT, None)
 
-    def disconnect(self) -> OutputTuple:
-        """
-        Disconnects both server socket and client socket.
-
-        Returns
-        -------
-        OutputTuple :
-            Where Status states whether disconnecting was successful.
-        """
-        if self.client_socket:
-            self.client_socket.close()
-            self.client_socket = None
+    async def disconnect(self) -> OutputTuple:
+        if self.__wait_for_client_future and \
+                not self.__wait_for_client_future.done():
+            self.__wait_for_client_future.cancel('Server disconnected')
+        if self.client_transport:
+            if self.client_transport.can_write_eof():
+                self.client_transport.write_eof()
+            self.client_transport.close()
+            self.client_transport = None
             self.log.info('Client socket was disconnected')
-        if self.server_socket:
-            self.server_socket.close()
-            self.server_socket = None
+        if self.server:
+            if self.server.is_serving():
+                self.server.close()
+                await self.server.wait_closed()
+            self.server = None
             self.log.info('Server socket was disconnected')
         return OutputTuple(Status.CONNECTION_CLOSED, None)
+
+    def _create_done_future(self, result: OutputTuple):
+        f = asyncio.get_event_loop().create_future()
+        f.set_result(result)
+        return f
