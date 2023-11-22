@@ -345,7 +345,7 @@ class JSONRPCBase:
             except Exception as ex:
                 self.log.error(ex)
                 traceback.print_exception(
-                    etype=type(ex),
+                    None,
                     value=ex,
                     tb=ex.__traceback__,
                 )
