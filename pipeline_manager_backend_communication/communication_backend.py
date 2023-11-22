@@ -112,7 +112,7 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
 
     def data_received(self, data: bytes):
         self.collected_data += data
-        valid, size = self.check_message_lenght()
+        valid, size = self.check_message_length()
         if valid:
             received = self.collected_data[4:4 + size]
             self.collected_data = self.collected_data[4 + size:]
@@ -318,7 +318,7 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 return OutputTuple(Status.NOTHING, None)
 
-    def check_message_lenght(self) -> bool:
+    def check_message_length(self) -> bool:
         # Checking whether a header of the message was received
         if len(self.collected_data) < 4:
             return False, None
