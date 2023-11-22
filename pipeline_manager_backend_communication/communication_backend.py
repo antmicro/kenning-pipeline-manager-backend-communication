@@ -401,8 +401,3 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
             self.server = None
             self.log.info('Server socket was disconnected')
         return OutputTuple(Status.CONNECTION_CLOSED, None)
-
-    def _create_done_future(self, result: OutputTuple):
-        f = asyncio.get_event_loop().create_future()
-        f.set_result(result)
-        return f

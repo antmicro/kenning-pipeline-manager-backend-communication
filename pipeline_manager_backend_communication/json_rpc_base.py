@@ -42,7 +42,6 @@ class JSONRPCBase:
             self.loop = loop
         else:
             self.loop = asyncio.get_event_loop()
-        # self.client_thread: threading.Thread = None
 
         self.__request_id = 0
         self.__not_resolved: Dict[int, asyncio.Future[Dict]] = dict()
