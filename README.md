@@ -17,6 +17,8 @@ pip install 'pipeline_manager_backend_communication[pipeline-manager] git+https:
 ## Example client implementation
 
 ```python
+import asyncio
+
 # Importing necessery objects
 from pipeline_manager_backend_communication. \
     communication_backend import CommunicationBackend
@@ -24,41 +26,46 @@ from pipeline_manager_backend_communication \
     .misc_structures import MessageType, Status
 
 host = '127.0.0.1'
-port = 5000
+port = 9000
 
 # Implements JSON-RPC methods
 class RPCMethods:
     # Methods have to have matching names with JSON-RPC methods
-    def request_specification(self) -> Dict:
+    def specification_get(self) -> dict:
         # ...
-        return {'type': MessageType.OK.value, 'content': spec}
+        return {'type': MessageType.OK.value, 'content': {}}
 
     # Method's parameters have to match with received message
     # or **kwargs can be used to get all received params
-    def validate_dataflow(self, dataflow: Dict) -> Dict:
+    def dataflow_validate(self, dataflow: dict) -> dict:
         # ...
         return {'type': MessageType.OK.value}
 
-    def run_dataflow(self, dataflow: Dict) -> Dict:
+    def dataflow_run(self, dataflow: dict) -> dict:
         # ...
         return {'type': MessageType.OK.value}
 
-    def stop_dataflow(self) -> Dict:
+    def dataflow_stop(self) -> dict:
         # ...
         return {'type': MessageType.OK.value}
 
-    def export_dataflow(self, dataflow: Dict) -> Dict:
+    def dataflow_export(self, dataflow: dict) -> dict:
         # ...
         return {'type': MessageType.OK.value, 'content': dataflow}
 
-    def import_dataflow(self, **kwargs) -> Dict:
+    def dataflow_import(self, **kwargs) -> dict:
         # ...
         return {'type': MessageType.OK.value, 'content': kwargs['external_application_dataflow']}
 
-# Creating a client instance with host and port specified
-client = CommunicationBackend(host, port)
-# Initialize client with registering methods
-client.initialize_client(RPCMethods())
-# Start JSON-RPC client
-client.start_json_rpc_client()
+
+async def main():
+    # Creating a client instance with host and port specified
+    client = CommunicationBackend(host, port)
+    # Initialize client with registering methods
+    await client.initialize_client(RPCMethods())
+    # Start JSON-RPC client
+    await client.start_json_rpc_client()
+
+loop = asyncio.get_event_loop()
+loop.run_until_complete(main())
 ```
