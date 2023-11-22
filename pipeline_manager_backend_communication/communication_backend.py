@@ -51,6 +51,8 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
             IPv4 of the socket that is going to be used.
         port : str
             Application port that is going to be used.
+        loop: Optional[asyncio.AbstractEventLoop] = None
+            Event loop used. By default uvloop.Loop is used.
         receive_message_timeout : float
             Timeout for receiving message.
         encoding_format : str
