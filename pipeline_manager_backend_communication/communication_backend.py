@@ -113,23 +113,23 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
     def data_received(self, data: bytes):
         self.collected_data += data
         valid, size = self.check_message_length()
-        if not valid:
-            return
-        received = self.collected_data[4:4 + size]
-        self.collected_data = self.collected_data[4 + size:]
-        if not self.__wait_for_message_future[-1].done():
-            self.__wait_for_message_future[-1].set_result(received)
-            self.__wait_for_message_future.append(
-                self.loop.create_future()
-            )
-        elif self.__wait_for_message_future[-1].cancelled():
-            self.__wait_for_message_future.append(
-                self.loop.create_future()
-            )
-            self.__wait_for_message_future[-1].set_result(received)
-            self.__wait_for_message_future.append(
-                self.loop.create_future()
-            )
+        while valid:
+            received = self.collected_data[4:4 + size]
+            self.collected_data = self.collected_data[4 + size:]
+            if not self.__wait_for_message_future[-1].done():
+                self.__wait_for_message_future[-1].set_result(received)
+                self.__wait_for_message_future.append(
+                    self.loop.create_future()
+                )
+            elif self.__wait_for_message_future[-1].cancelled():
+                self.__wait_for_message_future.append(
+                    self.loop.create_future()
+                )
+                self.__wait_for_message_future[-1].set_result(received)
+                self.__wait_for_message_future.append(
+                    self.loop.create_future()
+                )
+            valid, size = self.check_message_length()
 
     def eof_received(self):
         self.log.warning('EOF received')
