@@ -46,27 +46,15 @@ class JSONRPCBase:
         self.__request_id = 0
         self.__not_resolved: Dict[int, asyncio.Future[Dict]] = dict()
 
-    async def start_json_rpc_client(self, separate_thread: bool = False):
+    async def start_json_rpc_client(self):
         """
         Starts JSON-RPC client which waits for messages and process them.
-
-        Parameters
-        ----------
-        separate_thread : bool
-            Run JSON-RPC client in separate thread
-
-        Raises
-        ------
-        Exception :
-            If previous thread is still alive
         """
         await self._json_rpc_client()
 
     async def _generate_send_response(self, data: Dict):
         """
         Generates response to JSON-RPC request and sends it back.
-
-        It can be run in separate thread.
 
         Parameters
         ----------
@@ -257,9 +245,6 @@ class JSONRPCBase:
             Name of the requested method
         params : Optional[Dict]
             Parameters for requested method
-        non_blocking : bool
-            Should this method wait for response,
-            works only when JSON-RPC client runs on separate thread
 
         Returns
         -------
@@ -280,7 +265,7 @@ class JSONRPCBase:
         """
         Method for registring response.
 
-        It releases lock if some thread is waiting for this reponse.
+        It sets result of Future instance connected with request.
 
         Parameters
         ----------
