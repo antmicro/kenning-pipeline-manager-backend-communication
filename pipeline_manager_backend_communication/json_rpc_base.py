@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import re
 import json
 import logging
 import traceback
@@ -364,7 +365,10 @@ class JSONRPCBase:
                 continue
             if (
                 specification and
-                name not in specification[0][f'{methods}_endpoints']
+                not (
+                    re.match(r'^custom_.*$', name) or
+                    name in specification[0][f'{methods}_endpoints']
+                )
             ):
                 self.log.warn(f"Method not in specification: {name}")
                 continue
