@@ -7,6 +7,7 @@ import re
 import json
 import logging
 import traceback
+from contextvars import ContextVar
 from jsonrpc import JSONRPCResponseManager, Dispatcher
 from jsonrpc.jsonrpc import JSONRPCRequest
 from jsonrpc.jsonrpc2 import (
@@ -44,6 +45,7 @@ class JSONRPCBase:
         else:
             self.loop = asyncio.get_event_loop()
 
+        self.__context_sid = ContextVar('Session ID of current context')
         self.__request_id = 0
         self.__not_resolved: Dict[int, asyncio.Future[Dict]] = dict()
 
@@ -62,9 +64,10 @@ class JSONRPCBase:
         data : Dict
             JSON-RPC request
         """
+        self.__context_sid.set(data['params'].pop('sid'))
         response = await self.generate_json_rpc_response(data)
         if response:
-            await self.send_jsonrpc_message(response.json)
+            await self.send_jsonrpc_message_with_sid(response.data)
 
     async def _json_rpc_client(self):
         """
@@ -113,6 +116,44 @@ class JSONRPCBase:
             raised while sending the message.
         """
         raise NotImplementedError
+
+    async def send_jsonrpc_message_with_sid(
+        self,
+        data: Dict,
+        sid: Optional[str] = None,
+    ) -> OutputTuple:
+        """
+        Sends a message with information about session ID.
+
+        ----------
+        data : Dict
+            Content of the message compatible with JSON RPC.
+        sid : Optional[str]
+            Session ID wich will be added to the message.
+            If None, context_sid will be used if exists.
+
+        Returns
+        -------
+        OutputTuple :
+            Where Status states whether sending the message was successful and
+            the data argument is either a None or an exception that was
+            raised while sending the message.
+        """
+        sid = sid if sid else self.__context_sid.get(None)
+        if sid:
+            if 'error' in data:
+                key = 'error'
+            elif 'method' in data:
+                key = 'params'
+            else:
+                key = 'result'
+            if key in data and data[key]:
+                data[key]['sid'] = sid
+            else:
+                data[key] = {
+                    'sid': sid
+                }
+        return await self.send_jsonrpc_message(data)
 
     async def parse_collected_data(self, message: bytes) -> OutputTuple:
         """
@@ -230,7 +271,7 @@ class JSONRPCBase:
             Parameters of the notification's method
         """
         request = self.generate_notification(method, params)
-        await self.send_jsonrpc_message(request)
+        await self.send_jsonrpc_message_with_sid(request)
 
     async def request(
         self,
@@ -257,7 +298,7 @@ class JSONRPCBase:
         request = self.generate_request(method, params)
         _id = request['id']
         self.__not_resolved[_id] = self.loop.create_future()
-        await self.send_jsonrpc_message(request)
+        await self.send_jsonrpc_message_with_sid(request)
         response = await self.__not_resolved[_id]
         del self.__not_resolved[_id]
         return response
