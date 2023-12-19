@@ -49,6 +49,23 @@ class JSONRPCBase:
         self.__request_id = 0
         self.__not_resolved: Dict[int, asyncio.Future[Dict]] = dict()
 
+    @staticmethod
+    def _get_key(data: Dict) -> str:
+        """
+        Returns key based on the data type.
+
+        Returns
+        -------
+        str :
+            Either `error`, `params` or `result` depending on the message type
+        """
+        if 'error' in data:
+            return 'error'
+        elif 'method' in data:
+            return 'params'
+        else:
+            return 'result'
+
     async def start_json_rpc_client(self):
         """
         Starts JSON-RPC client which waits for messages and process them.
@@ -64,7 +81,10 @@ class JSONRPCBase:
         data : Dict
             JSON-RPC request
         """
-        self.__context_sid.set(data['params'].pop('sid'))
+        key = self._get_key(data)
+        self.__context_sid.set(data[key].pop('sid'))
+        if key in data[key]:
+            data[key] = data[key][key]
         response = await self.generate_json_rpc_response(data)
         if response:
             await self.send_jsonrpc_message_with_sid(response.data)
@@ -124,6 +144,26 @@ class JSONRPCBase:
     ) -> OutputTuple:
         """
         Sends a message with information about session ID.
+        The format of the message changes from:
+
+        .. code-block:: python
+            {
+                "id": id,
+                "jsonrpc": "2.0",
+                key: data
+            }
+
+        to:
+
+        .. code-block:: python
+            {
+                "id": id,
+                "jsonrpc": "2.0",
+                key: {
+                    key: data,
+                    "sid": sid
+                }
+            }
 
         ----------
         data : Dict
@@ -141,17 +181,16 @@ class JSONRPCBase:
         """
         sid = sid if sid else self.__context_sid.get(None)
         if sid:
-            if 'error' in data:
-                key = 'error'
-            elif 'method' in data:
-                key = 'params'
-            else:
-                key = 'result'
+            key = self._get_key(data)
             if key in data and data[key]:
-                data[key]['sid'] = sid
+                data[key] = {
+                    'sid': sid,
+                    key: data[key]
+                }
             else:
                 data[key] = {
-                    'sid': sid
+                    'sid': sid,
+                    key: {}
                 }
         return await self.send_jsonrpc_message(data)
 
@@ -301,6 +340,9 @@ class JSONRPCBase:
         await self.send_jsonrpc_message_with_sid(request)
         response = await self.__not_resolved[_id]
         del self.__not_resolved[_id]
+        key = self._get_key(response)
+        if key in response and response[key]:
+            response[key] = response[key][key]
         return response
 
     def receive_response(self, response: Dict):
