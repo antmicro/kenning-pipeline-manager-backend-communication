@@ -124,6 +124,7 @@ class JSONRPCBase:
         """
         Sends a message of a specified type and content.
 
+        Parameters
         ----------
         data : Dict
             Content of the message compatible with JSON RPC.
@@ -165,6 +166,7 @@ class JSONRPCBase:
                 }
             }
 
+        Parameters
         ----------
         data : Dict
             Content of the message compatible with JSON RPC.
