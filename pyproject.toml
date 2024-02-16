@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pipeline_manager_backend_communication"
-version = "0.1"
+version = "0.0.1"
 description = "General purpose TCP communication backend"
 authors = [
     {name = "Antmicro Ltd.", email = "contact@antmicro.com"},
