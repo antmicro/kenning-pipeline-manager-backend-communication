@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024 Antmicro <www.antmicro.com>
+# Copyright (c) 2022-2025 Antmicro <www.antmicro.com>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -21,7 +21,7 @@ classifiers = [
 readme = "README.md"
 dependencies = [
     "json-rpc==1.15.0",
-    "uvloop>=0.16.0",
+    "uvloop>=0.16.0,!=0.22.1,!=0.22.0",
 ]
 
 [project.optional-dependencies]
