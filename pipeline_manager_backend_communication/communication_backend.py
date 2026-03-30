@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import uuid
 import asyncio
 import json
 import signal
 from collections import defaultdict
-from typing import Optional, Callable, Dict, List
+from typing import Optional, Callable, Dict, List, Tuple
 from jsonrpc.exceptions import JSONRPCDispatchException
 
 from pipeline_manager_backend_communication.misc_structures import OutputTuple, Status, CustomErrorCode  # noqa: E501
@@ -41,6 +42,7 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
         receive_message_timeout: float = None,
         encoding_format: str = 'UTF-8',
         add_signal_handler: bool = False,
+        max_packet_size: int = 10*1024*1024
     ):
         """
         Creates the instance of CommunicationBackend.
@@ -68,8 +70,11 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
 
         self.server = None
         self.client_transport = None
-        self.packet_size = 4096
+        self.packet_size = max_packet_size
         self.collected_data = bytes()
+        # A dictionary used to collect chunked
+        # messages
+        self.chunks = {}
 
         self.callbacks = defaultdict(list)
 
@@ -112,24 +117,36 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
 
     def data_received(self, data: bytes):
         self.collected_data += data
-        valid, size = self.check_message_length()
+        valid, size, id = self.check_message_length()
         while valid:
-            received = self.collected_data[4:4 + size]
-            self.collected_data = self.collected_data[4 + size:]
-            if not self.__wait_for_message_future[-1].done():
-                self.__wait_for_message_future[-1].set_result(received)
-                self.__wait_for_message_future.append(
-                    self.loop.create_future()
-                )
-            elif self.__wait_for_message_future[-1].cancelled():
-                self.__wait_for_message_future.append(
-                    self.loop.create_future()
-                )
-                self.__wait_for_message_future[-1].set_result(received)
-                self.__wait_for_message_future.append(
-                    self.loop.create_future()
-                )
-            valid, size = self.check_message_length()
+            received = self.collected_data[20:20 + size]
+            self.collected_data = self.collected_data[20 + size:]
+
+            # Add message to chunk
+            if id in self.chunks.keys():
+                self.chunks[id] += received
+            else:
+                self.chunks[id] = received
+
+            if size == 0:
+
+                payload = self.chunks[id]
+
+                if not self.__wait_for_message_future[-1].done():
+                    self.__wait_for_message_future[-1].set_result(payload)
+                    self.__wait_for_message_future.append(
+                        self.loop.create_future()
+                    )
+                elif self.__wait_for_message_future[-1].cancelled():
+                    self.__wait_for_message_future.append(
+                        self.loop.create_future()
+                    )
+                    self.__wait_for_message_future[-1].set_result(payload)
+                    self.__wait_for_message_future.append(
+                        self.loop.create_future()
+                    )
+                del self.chunks[id]
+            valid, size, id = self.check_message_length()
 
     def eof_received(self):
         self.log.warning('EOF received')
@@ -139,6 +156,8 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
         if self.client_transport and not self.client_transport.is_closing():
             self.client_transport.close()
         self.client_transport = None
+        # Clear chunks buffer
+        self.chunks = {}
         # Cancel currently used awaits
         if self.__wait_for_client_future and \
                 not self.__wait_for_client_future.done():
@@ -319,19 +338,21 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 return OutputTuple(Status.NOTHING, None)
 
-    def check_message_length(self) -> bool:
+    def check_message_length(self) -> Tuple[bool, int, str]:
         # Checking whether a header of the message was received
-        if len(self.collected_data) < 4:
-            return False, None
+        if len(self.collected_data) < 20:
+            return False, None, None
+
+        id = uuid.UUID(bytes=self.collected_data[0:16])
 
         content_size = int.from_bytes(
-            self.collected_data[:4],
+            self.collected_data[16:20],
             byteorder='big',
             signed=False
         )
 
         # Checking whether a full message was received.
-        return len(self.collected_data) - 4 >= content_size, content_size
+        return len(self.collected_data) - 20 >= content_size, content_size, id
 
     async def parse_collected_data(self, message: bytes) -> OutputTuple:
         message_content = json.loads(message.decode('UTF-8'))
@@ -382,12 +403,25 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
             )
         await self.__can_write.wait()
 
-        length = (len(data)).to_bytes(4, byteorder='big', signed=False)
-        message = length + data
+        message_id = uuid.uuid4()
+        id_bytes = message_id.bytes
+
+        chunks = [
+            data[i:i+self.packet_size]
+            for i in range(0, len(data), self.packet_size)
+        ]
+
+        for chunk in chunks:
+            length = (len(chunk)).to_bytes(4, byteorder='big', signed=False)
+            message = id_bytes + length + chunk
+            self.client_transport.write(message)
+        message = id_bytes + 0x00.to_bytes(4, byteorder='big', signed=False)
         self.client_transport.write(message)
+
         return OutputTuple(Status.DATA_SENT, None)
 
     async def disconnect(self) -> OutputTuple:
+        self.chunks = {}
         if self.__wait_for_client_future and \
                 not self.__wait_for_client_future.done():
             self.__wait_for_client_future.cancel('Server disconnected')
