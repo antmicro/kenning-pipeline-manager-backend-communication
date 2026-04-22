@@ -21,18 +21,27 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
 
     Every message is of a format:
 
-    SIZE : 4 bytes | CONTENT : SIZE bytes
+    UUID : 16 bytes | SIZE : 4 bytes | CONTENT : SIZE bytes
 
     Where:
+    - UUID    - UUIDv4 that indicates session id, for message chunking.
     - SIZE    - four first bytes are unsigned int and state the size of the
                 content of the message in bytes.
     - CONTENT - the rest of the bytes convey the data in JSON-RPC format.
+
+    Before data is sent, message is split into chunks, assigin common
+    session UUIDv4, end of communication is indicated by a message
+    with size 0.
 
     Every function that can be invoked should return a tuple (Status, Any).
     The first element states a status of the server after executing the
     function.
     The second element can be any additional information.
     """
+
+    UUID_SIZE = 16
+    CONTENT_SIZE = 4
+    HEADER_SIZE = UUID_SIZE + CONTENT_SIZE
 
     def __init__(
         self,
@@ -119,8 +128,9 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
         self.collected_data += data
         valid, size, id = self.check_message_length()
         while valid:
-            received = self.collected_data[20:20 + size]
-            self.collected_data = self.collected_data[20 + size:]
+            received = self.collected_data[self.HEADER_SIZE:
+                                           self.HEADER_SIZE + size]
+            self.collected_data = self.collected_data[self.HEADER_SIZE + size:]
 
             # Add message to chunk
             if id in self.chunks.keys():
@@ -340,19 +350,21 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
 
     def check_message_length(self) -> Tuple[bool, int, str]:
         # Checking whether a header of the message was received
-        if len(self.collected_data) < 20:
+        if len(self.collected_data) < self.HEADER_SIZE:
             return False, None, None
 
-        id = uuid.UUID(bytes=self.collected_data[0:16])
+        id = uuid.UUID(bytes=self.collected_data[0:self.UUID_SIZE])
 
         content_size = int.from_bytes(
-            self.collected_data[16:20],
+            self.collected_data[self.UUID_SIZE:self.HEADER_SIZE],
             byteorder='big',
             signed=False
         )
-
         # Checking whether a full message was received.
-        return len(self.collected_data) - 20 >= content_size, content_size, id
+        return (
+                len(self.collected_data) - self.HEADER_SIZE >= content_size,
+                content_size, id
+                )
 
     async def parse_collected_data(self, message: bytes) -> OutputTuple:
         message_content = json.loads(message.decode('UTF-8'))
@@ -412,10 +424,13 @@ class CommunicationBackend(JSONRPCBase, asyncio.Protocol):
         ]
 
         for chunk in chunks:
-            length = (len(chunk)).to_bytes(4, byteorder='big', signed=False)
+            length = (len(chunk)).to_bytes(self.CONTENT_SIZE,
+                                           byteorder='big', signed=False)
             message = id_bytes + length + chunk
             self.client_transport.write(message)
-        message = id_bytes + 0x00.to_bytes(4, byteorder='big', signed=False)
+        # Empty message indicating the end of transmission
+        message = id_bytes + 0x00.to_bytes(self.CONTENT_SIZE,
+                                           byteorder='big', signed=False)
         self.client_transport.write(message)
 
         return OutputTuple(Status.DATA_SENT, None)
