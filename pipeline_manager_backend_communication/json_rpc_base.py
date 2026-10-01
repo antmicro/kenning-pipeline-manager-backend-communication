@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2024 Antmicro <www.antmicro.com>
+# Copyright (c) 2022-2026 Antmicro <www.antmicro.com>
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -43,7 +43,10 @@ class JSONRPCBase:
         if loop:
             self.loop = loop
         else:
-            self.loop = asyncio.get_event_loop()
+            try:
+                self.loop = asyncio.get_running_loop()
+            except RuntimeError:
+                self.loop = asyncio.new_event_loop()
 
         self.__context_sid = ContextVar('Session ID of current context')
         self.__request_id = 0

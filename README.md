@@ -1,6 +1,6 @@
 # Pipeline Manager Backend Communication
 
-Copyright (c) 2022-2025 [Antmicro](https://www.antmicro.com)
+Copyright (c) 2022-2026 [Antmicro](https://www.antmicro.com)
 
 Pipeline Manager Backend Communication is an implementation of a protocol used to communicate with [Pipeline Manager](https://github.com/antmicro/kenning-pipeline-manager).
 It can be used to implement a client that can send and receive messages from Pipeline Manager.
@@ -66,6 +66,5 @@ async def main():
     # Start JSON-RPC client
     await client.start_json_rpc_client()
 
-loop = asyncio.get_event_loop()
-loop.run_until_complete(main())
+asyncio.run(main())
 ```
